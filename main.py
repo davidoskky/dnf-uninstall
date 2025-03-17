@@ -2,10 +2,14 @@
 import curses
 import subprocess
 
+
 def get_user_installed_packages():
-    result = subprocess.run(['dnf', 'repoquery', '--userinstalled'], stdout=subprocess.PIPE)
-    packages = result.stdout.decode('utf-8').split('\n')
+    result = subprocess.run(
+        ["dnf", "repoquery", "--userinstalled"], stdout=subprocess.PIPE
+    )
+    packages = result.stdout.decode("utf-8").split("\n")
     return packages
+
 
 def curses_main(stdscr):
     # Initialize color pair
@@ -29,7 +33,7 @@ def curses_main(stdscr):
             package = packages[idx]
 
             if len(package) > width - 2:
-                package = package[:width - 5] + '...'
+                package = package[: width - 5] + "..."
 
             x = 0
             y = i
@@ -53,11 +57,21 @@ def curses_main(stdscr):
             current_row += 1
             if current_row >= top_row + height:
                 top_row = current_row - height + 1
-        elif key == ord('q'):
+        elif key == ord("q"):
             break
-        elif key == ord('d'):
+        elif key == ord("d"):
             package_to_remove = packages[current_row]
-            subprocess.run(['sudo', 'dnf', 'mark', 'remove', package_to_remove])
+            subprocess.run(
+                [
+                    "sudo",
+                    "dnf",
+                    "mark",
+                    "dependency",
+                    "--assumeyes",
+                    "--quiet",
+                    package_to_remove,
+                ]
+            )
 
             packages = get_user_installed_packages()
             current_row = max(0, min(current_row, len(packages) - 1))  # Reset selection
@@ -66,7 +80,6 @@ def curses_main(stdscr):
     curses.endwin()
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     curses.wrapper(curses_main)
-    subprocess.run(['sudo', 'dnf', 'autoremove'])
-
+    subprocess.run(["sudo", "dnf", "autoremove"])
