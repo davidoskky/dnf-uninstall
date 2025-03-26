@@ -95,6 +95,7 @@ def autoremove(base):
     transaction.run()
 
 
+
 def curses_main(stdscr, base):
     # Initialize color pair
     _init_curses()
@@ -105,39 +106,19 @@ def curses_main(stdscr, base):
         selected_packages=set(),
         viewing_dependencies=False,
         current_row=0,
-        top_row=0, base=base)
+        top_row=0,
+        base=base)
 
     while True:
         stdscr.clear()
         height, width = stdscr.getmaxyx()
 
         # Calculate the number of rows to display
-        num_rows = min(len(state.packages) - state.top_row, height)
 
-        if state.viewing_dependencies:
-            display_packages = state.dependencies
-            title = f"Dependencies required by {state.parent_package} (← to go back)"
-        else:
-            display_packages = state.packages
-            title = "User-installed Packages (→ to view required dependencies)"
 
-        for i in range(num_rows):
-            idx = state.top_row + i
-            package = display_packages[idx]
-
-            marker = "[*] " if package in state.selected_packages else "[ ] "
-            display_text = marker + package
-            if len(display_text) > width - 2:
-                display_text = display_text[: width - 5] + "..."
-
-            x, y = 0, i
-
-            if idx == state.current_row:
-                stdscr.attron(curses.color_pair(1))
-                stdscr.addstr(y, x, display_text)
-                stdscr.attroff(curses.color_pair(1))
-            else:
-                stdscr.addstr(y, x, display_text)
+        display_packages = _get_display_content(state)
+        _render_title(stdscr, state)
+        _render_packages(stdscr, state, height, width)
 
         stdscr.refresh()
 
@@ -209,6 +190,47 @@ def _init_curses():
     curses.init_pair(2, curses.COLOR_YELLOW, curses.COLOR_BLACK)
     curses.curs_set(0)
 
+def _get_display_content(state: ApplicationState) -> list[str]:
+    """Determine which packages and title to display."""
+    if state.viewing_dependencies:
+        return list(state.dependencies)
+    return state.packages
+
+def _render_title(stdscr, state: ApplicationState) -> None:
+    """Render the screen title."""
+    if state.viewing_dependencies:
+        title = f"Dependencies required by {state.parent_package} (← to go back)"
+    else:
+        title="User-installed Packages (→ to view required dependencies)"
+    stdscr.addstr(0, 0, title, curses.color_pair(2))
+
+def _render_packages(stdscr, state: ApplicationState,height: int, width: int) -> None:
+    """Render the package list."""
+    if state.viewing_dependencies:
+        packages = state.dependencies
+    else:
+        packages = state.packages
+
+    num_rows = min(len(packages) - state.top_row, height - 1)  # -1 for title
+
+    for i in range(num_rows):
+        idx = state.top_row + i
+        package = packages[idx]
+        _render_package_row(stdscr, i + 1, package, state, width, idx)
+
+
+def _render_package_row(stdscr, row: int, package: str,
+                        state: ApplicationState, width: int, idx: int) -> None:
+    """Render a single package row."""
+    marker = "[*] " if package in state.selected_packages else "[ ] "
+    display_text = f"{marker}{package}"[:width - 5] + ("..." if len(marker + package) > width - 2 else "")
+
+    if idx == state.current_row:
+        stdscr.attron(curses.color_pair(1))
+        stdscr.addstr(row, 0, display_text)
+        stdscr.attroff(curses.color_pair(1))
+    else:
+        stdscr.addstr(row, 0, display_text)
 
 def _page_up(state, height):
     """Handle page up navigation."""
