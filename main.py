@@ -9,6 +9,7 @@ import libdnf5
 @dataclass
 class ApplicationState:
     """Maintains the state of the curses application."""
+
     packages: list[str]
     base: str
     dependencies: set[str]
@@ -37,9 +38,6 @@ def get_user_installed_dependencies(base, package_name):
     package_query = libdnf5.rpm.PackageQuery(base)
     package_query.filter_installed()
     package_query.filter_name(package_name)
-
-    if package_query.size() == 0:
-        return []
 
     dependencies = set()
     for pkg in package_query:
@@ -95,7 +93,6 @@ def autoremove(base):
     transaction.run()
 
 
-
 def curses_main(stdscr, base):
     # Initialize color pair
     _init_curses()
@@ -107,16 +104,13 @@ def curses_main(stdscr, base):
         viewing_dependencies=False,
         current_row=0,
         top_row=0,
-        base=base)
+        base=base,
+    )
 
     while True:
         stdscr.clear()
         height, width = stdscr.getmaxyx()
 
-        # Calculate the number of rows to display
-
-
-        display_packages = _get_display_content(state)
         _render_title(stdscr, state)
         _render_packages(stdscr, state, height, width)
 
@@ -125,62 +119,26 @@ def curses_main(stdscr, base):
         key = stdscr.getch()
 
         # Navigation (Vim-style and arrow keys)
-        if key in (ord("k"), curses.KEY_UP) and state.current_row > 0:
-            state.current_row -= 1
-            if state.current_row < state.top_row:
-                state.top_row = state.current_row
-        elif key in (ord("j"), curses.KEY_DOWN) and state.current_row < len(state.packages) - 1:
-            state.current_row += 1
-            if state.current_row >= state.top_row + height - 1:
-                state.top_row = state.current_row - height + 2
-        elif key == curses.KEY_PPAGE:  # Page Up
-            state.current_row = max(0, state.current_row - height + 1)
-            state.top_row = max(0, state.top_row - height + 1)
-        elif key == curses.KEY_NPAGE:  # Page Down
-            state.current_row = min(len(display_packages) - 1, state.current_row + height - 1)
-            state.top_row = min(len(display_packages) - height + 1, state.top_row + height - 1)
-
-        # Vim-style "gg" (go to top) and "G" (go to bottom)
-        elif key == ord("g"):
-            key2 = stdscr.getch()
-            if key2 == ord("g"):
-                _go_to_top(state)
+        if key in (ord("k"), curses.KEY_UP):
+            _move_vertical(state, -1, height)
+        elif key in (ord("j"), curses.KEY_DOWN):
+            _move_vertical(state, 1, height)
+        elif key == curses.KEY_PPAGE:
+            _page_move(state, -height + 1)
+        elif key == curses.KEY_NPAGE:
+            _page_move(state, height - 1)
+        elif key == ord("g") and stdscr.getch() == ord("g"):
+            _go_to_top(state)
         elif key == ord("G"):
-            _go_to_bottom(state, height, total_items=len(display_packages))
-
-        # Select/deselect with Space
+            _go_to_bottom(state, height)
         elif key == ord(" "):
-            package_to_toggle = state.packages[state.current_row]
-            if package_to_toggle in state.selected_packages:
-                state.selected_packages.remove(package_to_toggle)
-            else:
-                state.selected_packages.add(package_to_toggle)
-
-        # Remove selected packages with "d"
+            _toggle_selection(state)
         elif key == ord("d") and state.selected_packages:
-            remove_packages(state.base, state.selected_packages)
-            state.packages = get_user_installed_packages(state.base)
-            state.selected_packages.clear()
-            state.current_row = min(state.current_row, len(display_packages) - 1)
-            state.top_row = max(0, min(state.top_row, len(display_packages) - height))
-
-        # View required dependencies of the selected package (→)
+            _remove_selected(state)
         elif key == curses.KEY_RIGHT and not state.viewing_dependencies:
-            state.parent_package = state.packages[state.current_row]
-            state.dependencies = get_user_installed_dependencies(base, state.parent_package)
-
-            if state.dependencies:
-                state.viewing_dependencies = True
-                state.current_row, state.top_row = 0, 0
-
-        # Return to main list (←)
+            _view_dependencies(state)
         elif key == curses.KEY_LEFT and state.viewing_dependencies:
-            state.viewing_dependencies = False
-            state.dependencies = []
-            state.parent_package = None
-            state.current_row, state.top_row = 0, 0
-
-        # Quit with "q"
+            _return_to_main(state)
         elif key == ord("q"):
             break
 
@@ -190,21 +148,24 @@ def _init_curses():
     curses.init_pair(2, curses.COLOR_YELLOW, curses.COLOR_BLACK)
     curses.curs_set(0)
 
+
 def _get_display_content(state: ApplicationState) -> list[str]:
     """Determine which packages and title to display."""
     if state.viewing_dependencies:
         return list(state.dependencies)
     return state.packages
 
+
 def _render_title(stdscr, state: ApplicationState) -> None:
     """Render the screen title."""
     if state.viewing_dependencies:
         title = f"Dependencies required by {state.parent_package} (← to go back)"
     else:
-        title="User-installed Packages (→ to view required dependencies)"
+        title = "User-installed Packages (→ to view required dependencies)"
     stdscr.addstr(0, 0, title, curses.color_pair(2))
 
-def _render_packages(stdscr, state: ApplicationState,height: int, width: int) -> None:
+
+def _render_packages(stdscr, state: ApplicationState, height: int, width: int) -> None:
     """Render the package list."""
     if state.viewing_dependencies:
         packages = state.dependencies
@@ -219,11 +180,14 @@ def _render_packages(stdscr, state: ApplicationState,height: int, width: int) ->
         _render_package_row(stdscr, i + 1, package, state, width, idx)
 
 
-def _render_package_row(stdscr, row: int, package: str,
-                        state: ApplicationState, width: int, idx: int) -> None:
+def _render_package_row(
+    stdscr, row: int, package: str, state: ApplicationState, width: int, idx: int
+) -> None:
     """Render a single package row."""
     marker = "[*] " if package in state.selected_packages else "[ ] "
-    display_text = f"{marker}{package}"[:width - 5] + ("..." if len(marker + package) > width - 2 else "")
+    display_text = f"{marker}{package}"[: width - 5] + (
+        "..." if len(marker + package) > width - 2 else ""
+    )
 
     if idx == state.current_row:
         stdscr.attron(curses.color_pair(1))
@@ -232,16 +196,36 @@ def _render_package_row(stdscr, row: int, package: str,
     else:
         stdscr.addstr(row, 0, display_text)
 
-def _page_up(state, height):
-    """Handle page up navigation."""
-    state['current_row'] = max(0, state['current_row'] - height + 1)
-    state['top_row'] = max(0, state['top_row'] - height + 1)
+
+def _toggle_selection(state):
+    pkg = state.packages[state.current_row]
+    (
+        state.selected_packages.remove(pkg)
+        if pkg in state.selected_packages
+        else state.selected_packages.add(pkg)
+    )
 
 
-def _page_down(state: ApplicationState, height, total_items):
-    """Handle page down navigation."""
-    state.current_row = min(total_items - 1, state.current_row + height - 1)
-    state.top_row = min(total_items - height + 1, state.top_row + height - 1)
+def _remove_selected(state):
+    remove_packages(state.base, state.selected_packages)
+    state.packages = get_user_installed_packages(state.base)
+    state.selected_packages.clear()
+    state.current_row = min(state.current_row, len(state.packages) - 1)
+
+
+def _move_vertical(state, delta, height):
+    state.current_row = max(0, min(state.current_row + delta, len(state.packages) - 1))
+    if state.current_row < state.top_row:
+        state.top_row = state.current_row
+    elif state.current_row >= state.top_row + height - 1:
+        state.top_row = state.current_row - height + 2
+
+
+def _page_move(state, delta):
+    state.current_row = max(0, min(state.current_row + delta, len(state.packages) - 1))
+    state.top_row = max(
+        0, min(state.top_row + delta, len(state.packages) - (curses.LINES - 1))
+    )
 
 
 def _go_to_top(state: ApplicationState):
@@ -250,10 +234,27 @@ def _go_to_top(state: ApplicationState):
     state.top_row = 0
 
 
-def _go_to_bottom(state: ApplicationState, height, total_items):
+def _go_to_bottom(state: ApplicationState, height):
     """Handle 'G' command (go to bottom)."""
-    state.current_row = total_items - 1
-    state.top_row = max(0, total_items - height + 1)
+    state.current_row = len(state.packages) - 1
+    state.top_row = max(0, len(state.packages) - height + 1)
+
+
+def _view_dependencies(state):
+    state.parent_package = state.packages[state.current_row]
+    state.dependencies = get_user_installed_dependencies(
+        state.base, state.parent_package
+    )
+    if state.dependencies:
+        state.viewing_dependencies = True
+        _go_to_top(state)
+
+
+def _return_to_main(state):
+    state.viewing_dependencies = False
+    state.dependencies.clear()
+    state.parent_package = None
+    _go_to_top(state)
 
 
 if __name__ == "__main__":
