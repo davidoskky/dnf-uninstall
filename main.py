@@ -5,14 +5,22 @@ from typing import Optional
 
 import libdnf5
 
+_DESCRIPTION_PANEL_HEIGHT = 2  # separator row + summary row
+
+
+@dataclass(frozen=True)
+class PackageInfo:
+    nevra: str
+    summary: str
+
 
 @dataclass
 class ApplicationState:
     """Maintains the state of the curses application."""
 
-    packages: list[str]
+    packages: list[PackageInfo]
     base: str
-    dependencies: set[str]
+    dependencies: list[PackageInfo]
     selected_packages: set[str]
     viewing_dependencies: bool = False
     current_row: int = 0
@@ -28,7 +36,7 @@ def get_user_installed_packages(base):
     package_query.filter_userinstalled()
     package_query.filter_leaves()
 
-    return [pkg.get_nevra() for pkg in package_query]
+    return [PackageInfo(nevra=pkg.get_nevra(), summary=pkg.get_summary()) for pkg in package_query]
 
 
 def get_user_installed_dependencies(base, package_name):
@@ -39,15 +47,20 @@ def get_user_installed_dependencies(base, package_name):
     package_query.filter_installed()
     package_query.filter_name(package_name)
 
-    dependencies = set()
+    seen = set()
+    dependencies = []
     for pkg in package_query:
         dep_query = libdnf5.rpm.PackageQuery(base)
         dep_query.filter_userinstalled()
         dep_query.filter_provides(pkg)
 
-        dependencies.update([dep.get_nevra() for dep in dep_query])
+        for dep in dep_query:
+            nevra = dep.get_nevra()
+            if nevra not in seen:
+                seen.add(nevra)
+                dependencies.append(PackageInfo(nevra=nevra, summary=dep.get_summary()))
 
-    return sorted(dependencies)
+    return sorted(dependencies, key=lambda p: p.nevra)
 
 
 def remove_packages(base, packages_to_remove):
@@ -99,7 +112,7 @@ def curses_main(stdscr, base):
 
     state = ApplicationState(
         packages=get_user_installed_packages(base),
-        dependencies=set(),
+        dependencies=[],
         selected_packages=set(),
         viewing_dependencies=False,
         current_row=0,
@@ -113,6 +126,7 @@ def curses_main(stdscr, base):
 
         _render_title(stdscr, state)
         _render_packages(stdscr, state, height, width)
+        _render_description(stdscr, state, height, width)
 
         stdscr.refresh()
 
@@ -149,10 +163,10 @@ def _init_curses():
     curses.curs_set(0)
 
 
-def _get_display_content(state: ApplicationState) -> list[str]:
-    """Determine which packages and title to display."""
+def _get_display_content(state: ApplicationState) -> list[PackageInfo]:
+    """Determine which packages to display."""
     if state.viewing_dependencies:
-        return list(state.dependencies)
+        return state.dependencies
     return state.packages
 
 
@@ -167,12 +181,8 @@ def _render_title(stdscr, state: ApplicationState) -> None:
 
 def _render_packages(stdscr, state: ApplicationState, height: int, width: int) -> None:
     """Render the package list."""
-    if state.viewing_dependencies:
-        packages = state.dependencies
-    else:
-        packages = state.packages
-
-    num_rows = min(len(packages) - state.top_row, height - 1)  # -1 for title
+    packages = _get_display_content(state)
+    num_rows = min(len(packages) - state.top_row, height - 1 - _DESCRIPTION_PANEL_HEIGHT)
 
     for i in range(num_rows):
         idx = state.top_row + i
@@ -181,12 +191,12 @@ def _render_packages(stdscr, state: ApplicationState, height: int, width: int) -
 
 
 def _render_package_row(
-    stdscr, row: int, package: str, state: ApplicationState, width: int, idx: int
+    stdscr, row: int, package: PackageInfo, state: ApplicationState, width: int, idx: int
 ) -> None:
     """Render a single package row."""
-    marker = "[*] " if package in state.selected_packages else "[ ] "
-    display_text = f"{marker}{package}"[: width - 5] + (
-        "..." if len(marker + package) > width - 2 else ""
+    marker = "[*] " if package.nevra in state.selected_packages else "[ ] "
+    display_text = f"{marker}{package.nevra}"[: width - 5] + (
+        "..." if len(marker + package.nevra) > width - 2 else ""
     )
 
     if idx == state.current_row:
@@ -197,13 +207,23 @@ def _render_package_row(
         stdscr.addstr(row, 0, display_text)
 
 
+def _render_description(stdscr, state: ApplicationState, height: int, width: int) -> None:
+    """Render a summary panel for the currently highlighted package."""
+    packages = _get_display_content(state)
+    if not packages:
+        return
+    pkg = packages[state.current_row]
+    summary = pkg.summary or "No description available"
+    stdscr.hline(height - 2, 0, curses.ACS_HLINE, width - 1)
+    stdscr.addstr(height - 1, 0, summary[: width - 1])
+
+
 def _toggle_selection(state):
-    pkg = state.packages[state.current_row]
-    (
-        state.selected_packages.remove(pkg)
-        if pkg in state.selected_packages
-        else state.selected_packages.add(pkg)
-    )
+    pkg = _get_display_content(state)[state.current_row]
+    if pkg.nevra in state.selected_packages:
+        state.selected_packages.remove(pkg.nevra)
+    else:
+        state.selected_packages.add(pkg.nevra)
 
 
 def _remove_selected(state):
@@ -214,17 +234,21 @@ def _remove_selected(state):
 
 
 def _move_vertical(state, delta, height):
-    state.current_row = max(0, min(state.current_row + delta, len(state.packages) - 1))
+    packages = _get_display_content(state)
+    num_visible = height - 1 - _DESCRIPTION_PANEL_HEIGHT
+    state.current_row = max(0, min(state.current_row + delta, len(packages) - 1))
     if state.current_row < state.top_row:
         state.top_row = state.current_row
-    elif state.current_row >= state.top_row + height - 1:
-        state.top_row = state.current_row - height + 2
+    elif state.current_row >= state.top_row + num_visible:
+        state.top_row = state.current_row - num_visible + 1
 
 
 def _page_move(state, delta):
-    state.current_row = max(0, min(state.current_row + delta, len(state.packages) - 1))
+    packages = _get_display_content(state)
+    num_visible = curses.LINES - 1 - _DESCRIPTION_PANEL_HEIGHT
+    state.current_row = max(0, min(state.current_row + delta, len(packages) - 1))
     state.top_row = max(
-        0, min(state.top_row + delta, len(state.packages) - (curses.LINES - 1))
+        0, min(state.top_row + delta, len(packages) - num_visible)
     )
 
 
@@ -236,12 +260,14 @@ def _go_to_top(state: ApplicationState):
 
 def _go_to_bottom(state: ApplicationState, height):
     """Handle 'G' command (go to bottom)."""
-    state.current_row = len(state.packages) - 1
-    state.top_row = max(0, len(state.packages) - height + 1)
+    packages = _get_display_content(state)
+    num_visible = height - 1 - _DESCRIPTION_PANEL_HEIGHT
+    state.current_row = len(packages) - 1
+    state.top_row = max(0, len(packages) - num_visible)
 
 
 def _view_dependencies(state):
-    state.parent_package = state.packages[state.current_row]
+    state.parent_package = state.packages[state.current_row].nevra
     state.dependencies = get_user_installed_dependencies(
         state.base, state.parent_package
     )
